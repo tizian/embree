@@ -17,8 +17,16 @@ TutorialData data;
 #define MIN_EDGE_LEVEL  4.0f
 #define LEVEL_FACTOR   64.0f
 
+size_t cancel_at_invokation = -1;
+std::atomic<size_t> invokations(0);
+  
 bool monitorProgressFunction(void* ptr, double dn) 
 {
+  size_t invokation = invokations++;
+  if (invokation == cancel_at_invokation) {
+    PRINT2("cancelling build at", invokation);
+    return false;
+  }
   return true;
 }
 
@@ -131,7 +139,7 @@ RTCScene convertScene(ISPCScene* scene_in)
   {
     for (unsigned int i=0; i<scene_in->numGeometries; i++) {
       ISPCGeometry* geometry = g_ispc_scene->geometries[i];
-      if (geometry->type == GROUP) rtcCommitScene(geometry->scene);
+      if (geometry->type == GROUP)  rtcSetSceneProgressMonitorFunction(geometry->scene,monitorProgressFunction,nullptr);  //rtcCommitScene(geometry->scene);
     }
   }
 
@@ -356,7 +364,7 @@ extern "C" void renderFrameStandard (int* pixels,
     const int threadIndex = (int)TaskScheduler::threadIndex();
     for (size_t i=range.begin(); i<range.end(); i++)
       renderTileTask((int)i,threadIndex,pixels,width,height,time,camera,numTilesX,numTilesY);
-  }); 
+  });
 }
 
 /* called by the C++ code to render */
@@ -371,8 +379,54 @@ extern "C" void device_render (int* pixels,
   /* create scene */
   if (data.scene == nullptr) {
     g_scene = data.scene = convertScene(g_ispc_scene);
-    if (data.subdiv_mode) updateEdgeLevels(g_ispc_scene, camera.xfm.p);
+    //if (data.subdiv_mode) updateEdgeLevels(g_ispc_scene, camera.xfm.p);
+
+    /* first count number of progress callback invokations */
+    invokations.store(0);
+    cancel_at_invokation = -1;
+
+    if (g_instancing_mode != ISPC_INSTANCING_NONE) {
+      for (unsigned int i=0; i<g_ispc_scene->numGeometries; i++) {
+        ISPCGeometry* geometry = g_ispc_scene->geometries[i];
+        if (geometry->type == GROUP) rtcCommitScene(geometry->scene);
+      }
+    }
     rtcCommitScene (data.scene);
+    size_t numProgressInvokations = invokations;
+    PRINT(numProgressInvokations);
+      
+    for (size_t i=0; i<100000; i++)
+    {
+      /* just to trigger a rebuild */
+      if (g_instancing_mode != ISPC_INSTANCING_NONE) {
+        for (unsigned int i=0; i<g_ispc_scene->numGeometries; i++) {
+          ISPCGeometry* geometry = g_ispc_scene->geometries[i];
+          if (geometry->type == GROUP) {
+            if (((ISPCGroup*)geometry)->numGeometries) {
+              RTCGeometry geom = rtcGetGeometry(geometry->scene,0);
+              if (geom) rtcCommitGeometry(geom);
+            }
+          }
+        }
+      }
+      rtcSetSceneBuildQuality(g_scene,RTC_BUILD_QUALITY_LOW);
+      rtcSetSceneBuildQuality(g_scene,RTC_BUILD_QUALITY_MEDIUM);
+      rtcCommitGeometry(rtcGetGeometry(g_scene,0));
+      
+      PRINT(i);
+      invokations.store(0);
+      cancel_at_invokation = rand()%numProgressInvokations;
+
+      if (g_instancing_mode != ISPC_INSTANCING_NONE) {
+        for (unsigned int i=0; i<g_ispc_scene->numGeometries; i++) {
+          ISPCGeometry* geometry = g_ispc_scene->geometries[i];
+          if (geometry->type == GROUP) rtcCommitScene(geometry->scene);
+        }
+      }
+      rtcCommitScene (data.scene);
+      
+      PRINT(invokations);
+    }
     old_p = camera.xfm.p;
   }
 

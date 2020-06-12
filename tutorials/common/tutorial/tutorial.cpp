@@ -1267,7 +1267,7 @@ namespace embree
     error_handler(nullptr,rtcGetDeviceError(g_device));
 
     /* set error handler */
-    rtcSetDeviceErrorFunction(g_device,error_handler,nullptr);
+    //rtcSetDeviceErrorFunction(g_device,error_handler,nullptr);
   
     log(1,"application start");
     
